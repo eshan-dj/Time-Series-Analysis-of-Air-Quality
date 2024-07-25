@@ -1,0 +1,539 @@
+---
+title: "Time Series Analysis for Data Science"
+author: "Eshan & Thevmika"
+date: "2024-07-16"
+output: html_document
+---
+
+# Objective:
+
+### To analyze the air quality parameters recorded over a specific period, examining the variation in pollutants and meteorological factors to understand the environmental conditions and potential impacts on health.
+
+### Predict future air conditions through time series forecasting and selecting an appropriate model for it.
+
+### Determining the quality of air quality based on different patterns and trends.
+
+# Question
+
+### What are the key pollutants affecting air quality over the recorded period?
+
+### How do weather conditions impact air pollutant levels?
+
+### Which time series model best predicts future air quality?
+
+```{r}
+library(tidyverse)
+library(forecast)
+library(tseries)
+library(ggplot2)
+library(dplyr)
+library(caret)
+library(lubridate)
+library(corrplot)
+```
+
+```{r}
+# attach a data set
+data=read.csv(file.choose(),header=T)
+attach(data)
+head(data)
+```
+
+# Data Preprocessing
+
+```{r}
+num_entries <- nrow(data)
+print(num_entries)
+```
+
+```{r}
+# drop two columns
+data <- subset(data, select = -c(X, X.1))
+```
+
+## Check missing values and replace with mean value
+
+```{r}
+# check missing values
+any_missing <- any(is.na(data))
+any_missing
+```
+
+```{r}
+missing_counts <- colSums(is.na(data))
+missing_counts
+```
+
+```{r}
+# Replace -200 with NA
+data[data == -200] <- NA
+
+# replace NA with mean
+replace_na_with_mean <- function(column) {
+  mean_value <- mean(column, na.rm = TRUE)
+  column[is.na(column)] <- mean_value
+  return(column)
+}
+
+# Apply the each column
+data[] <- lapply(data, replace_na_with_mean)
+
+```
+
+```{r}
+missing_counts <- colSums(is.na(data))
+missing_counts
+```
+
+```{r}
+any_missing <- any(is.na(data))
+any_missing
+```
+
+## Remove Outliers
+
+```{r}
+# Assuming your original dataframe is named 'data'
+
+# Function to remove outliers based on IQR and replace with NA
+remove_outliers <- function(x) {
+  Q1 <- quantile(x, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x, 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  lower_bound <- Q1 - 1.5 * IQR
+  upper_bound <- Q3 + 1.5 * IQR
+  x_filtered <- ifelse(x < lower_bound | x > upper_bound, NA, x)
+  return(x_filtered)
+}
+
+# Apply the function to each numeric column in your dataframe
+data_clean <- data
+numeric_cols <- sapply(data_clean, is.numeric)
+data_clean[, numeric_cols] <- lapply(data_clean[, numeric_cols], remove_outliers)
+
+# Check number of rows in your cleaned dataset
+num_rows <- nrow(data_clean)
+print(num_rows)
+
+# Print summary statistics of numeric columns before and after outlier removal
+summary_before <- summary(data[, numeric_cols])
+summary_after <- summary(data_clean[, numeric_cols])
+
+print("Summary Statistics - Before Outlier Removal:")
+print(summary_before)
+
+print("Summary Statistics - After Outlier Removal:")
+print(summary_after)
+
+# Visualize boxplots of numeric columns before and after outlier removal
+par(mfrow = c(1, 2))  # Set up a 1x2 plotting grid
+
+for (col in names(data_clean[, numeric_cols])) {
+  boxplot(data[, col], main = paste("Before:", col))
+  boxplot(data_clean[, col], main = paste("After:", col))
+}
+
+par(mfrow = c(1, 1))  # Reset plotting grid
+
+```
+
+```{r}
+missing_counts <- colSums(is.na(data_clean))
+missing_counts
+```
+
+```{r}
+# Assuming your dataframe is named 'data'
+data_clean <- na.omit(data_clean)
+
+```
+
+```{r}
+missing_counts <- colSums(is.na(data_clean))
+missing_counts
+```
+### create datetime column
+
+```{r}
+
+transform_hourly_to_daily <- function(data_clean) {
+  
+  # Create datetime column if possible
+  data_clean <- data_clean %>%
+    mutate(datetime = ifelse(all(complete.cases(paste(Date, Time))), 
+                            parse_date_time(paste(Date, Time), orders = c("ymd HMS", "dmy HMS")), 
+                            NA))
+  
+  # Specify origin date for as.Date()
+   data_clean <- data_clean %>%
+    mutate(date = as.Date(datetime, origin = min(as.Date(data$Date))))  # Use minimum date as origin
+  
+  # Calculate daily averages for numeric columns
+  daily_data <- data_clean %>%
+    group_by(date) %>%
+    summarize_if(is.numeric, mean, na.rm = TRUE) %>%
+    ungroup()
+  
+  # Remove datetime column if exists
+  daily_data <- daily_data %>%
+    select(ifelse(exists("datetime", data), names(.)[!names(.) %in% "datetime"], names(.)))
+  
+  return(daily_data)
+}
+
+```
+
+```{r}
+head(data_clean)
+```
+```{r}
+# summary variables
+summary(data_clean)
+```
+
+```{r}
+str(data_clean)
+```
+
+```{r}
+# Combine date and time into a single datetime column
+data_clean <- data_clean %>%
+  mutate(datetime = parse_date_time(paste(Date, Time), orders = c("mdy HMS")))
+
+# Check for any failed parsing
+failed_parsing <- sum(is.na(data_clean$datetime))
+print(paste("Failed to parse:", failed_parsing))
+
+# If any parsing failures occurred, inspect them
+if (failed_parsing > 0) {
+  print(head(data_clean[is.na(data_clean$datetime), ]))
+}
+
+# Option 1: Remove rows with missing datetime values
+data_clean <- data_clean %>%
+  filter(!is.na(datetime))
+
+# Option 2: Fill missing datetime values (Example: forward fill)
+# data_clean <- data_clean %>%
+#   arrange(datetime) %>%
+#   fill(datetime, .direction = "downup")
+
+# Confirm the handling of missing datetime values
+sum(is.na(data_clean$datetime))
+
+
+```
+
+```{r}
+missing_counts <- colSums(is.na(data_clean))
+missing_counts
+```
+
+```{r}
+head(data_clean)
+```
+# Exploratory Data Analysis (EDA)
+
+```{r}
+# Gather the data for easier plotting
+data_long <- data_clean %>%
+  select(datetime, NO2.GT., PT08.S4.NO2., PT08.S5.O3.) %>%  # Replace with your actual pollutant columns
+  gather(key = "pollutant", value = "value", -datetime)
+
+# Plot the time series data
+ggplot(data_long, aes(x = datetime, y = value, color = pollutant)) +
+  geom_line() +
+  labs(title = "Time Series Data for Different Pollutants",
+       x = "Datetime",
+       y = "Pollutant Levels") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+ggplot(data_clean, aes(x=datetime)) +
+  geom_line(aes(y=`CO.GT.`, color='CO(GT)')) +
+  geom_line(aes(y=`NOx.GT.`, color='NOx(GT)')) +
+  geom_line(aes(y=`C6H6.GT.`, color='C6H6(GT)')) +
+  labs(title='Air Quality Time Series', x='Time', y='Value') +
+  scale_color_manual(name = "Pollutants",
+                     values = c('CO(GT)'='blue', 'NOx(GT)'='red', 'C6H6(GT)'='green')) +
+  theme_minimal()
+```
+
+```{r}
+class(CO.GT.)
+```
+
+```{r}
+# Visualize the time series data for CO (GT)
+ggplot(data_clean, aes(x = datetime, y = CO.GT.)) +
+  geom_line(color = "blue") +
+  labs(title = "Daily CO (GT) Levels Over Time", x = "DateTime", y = "CO (GT)") +
+  theme_minimal()
+```
+```{r}
+data_daily <- data %>%
+  group_by(Date) %>%
+  summarize(across(where(is.numeric), mean, na.rm = TRUE))
+cor_matrix <- cor(data_daily %>% select(where(is.numeric)), use = "complete.obs")
+```
+```{r}
+# Correlation Matrix
+corrplot(cor_matrix, method = "circle", type = "full", 
+         tl.col = "black", tl.srt = 45, 
+         title = "Correlation Matrix of Air Quality Parameters",
+         mar = c(0, 0, 1, 0))
+```
+```{r}
+# Create a scatter plot with a regression line(CO(GT) vs RH)
+ggplot(data_daily, aes(x = CO.GT., y = T)) +
+  geom_point() +
+  geom_smooth(method = "lm", col = "blue") +
+  labs(title = "Scatter Plot of CO (GT) vs T",
+       x = "CO (GT)",
+       y = "T") +
+  theme_minimal()
+```
+
+
+
+```{r}
+decomp <- stl(ts(data_clean$`CO.GT.`, frequency = 24), s.window = "periodic")
+autoplot(decomp)
+```
+```{r}
+decomp <- stl(ts(data_clean$`NO2.GT.`, frequency = 24), s.window = "periodic")
+autoplot(decomp)
+```
+
+```{r}
+# Compute mean for each variable
+means <- sapply(data_clean, mean)
+print("Means:")
+print(means)
+```
+
+```{r}
+# Compute variance for each variable
+variances <- sapply(data_clean, var)
+print("Variances:")
+print(variances)
+```
+# check Stationary
+ 
+```{r}
+ts_data <- ts(data_clean$ CO.GT.)
+```
+
+```{r}
+adf_test_result <- adf.test(ts_data)
+print(adf_test_result)
+```
+
+```{r}
+train_data <- head(ts_data, round(length(ts_data)*0.8))
+test_data <- head(ts_data, round(length(ts_data)*0.2))
+```
+
+```{r}
+head(train_data)
+```
+```{r}
+head(train_data)
+```
+
+```{r}
+par(mfrow=c(2,3))
+acf(train_data, main='ACF for CO(GT)')
+pacf(train_data, main='PACF for CO(GT)')
+```
+# Modeling
+
+### Arima Model
+
+```{r}
+# Fit ARIMA model
+fit_arima <- auto.arima(train_data)
+
+# Forecast using ARIMA model
+forecast_arima <- forecast(fit_arima, h=length(test_data))
+forecast_arima_values <- as.numeric(forecast_arima$mean)
+
+
+# Print ARIMA model summary
+summary(fit_arima)
+```
+
+```{r}
+# Plot residuals ACF and PACF
+par(mfrow=c(2,3))
+acf(residuals(fit_arima), main='Residual ACF (ARIMA)')
+pacf(residuals(fit_arima), main='Residual PACF (ARIMA)')
+```
+
+### Sarima Model 
+
+```{r}
+# Fit SARIMA model (Seasonal ARIMA)
+fit_sarima <- auto.arima(train_data, seasonal=TRUE)
+
+# Forecast using SARIMA model
+forecast_sarima <- forecast(fit_sarima, h=length(test_data))
+forecasts_sarima_values <- as.numeric(forecast_sarima$mean)
+
+# Print SARIMA model summary
+summary(fit_sarima)
+```
+
+```{r}
+# Plot residuals ACF and PACF
+par(mfrow=c(2,3))
+acf(residuals(fit_sarima), main='Residual ACF (SARIMA)')
+pacf(residuals(fit_sarima), main='Residual PACF (SARIMA)')
+```
+
+
+### Exponential Smoothing
+
+```{r}
+# Fit Exponential Smoothing model
+fit_ets <- ets(train_data)
+
+# Forecast using Exponential Smoothing model
+forecast_ets <- forecast(fit_ets, h=length(test_data))
+forecasts_ets_values <- as.numeric(forecast_ets$mean)
+
+# Print ETS model summary
+summary(fit_ets)
+```
+## Use Cross validation and select best model
+
+```{r}
+# Function to perform cross-validation
+cross_validation <- function(ts_data, k=5, h=12) {
+  n <- length(ts_data)
+  errors <- matrix(NA, nrow=k, ncol=3)
+  colnames(errors) <- c("ARIMA", "SARIMA", "ETS")
+  
+  for (i in 1:k) {
+    # Define training and test sets
+    train_end <- n - (k - i) * h
+    train_data <- ts_data[1:train_end]
+    test_data <- ts_data[(train_end + 1):(train_end + h)]
+    
+    # Fit ARIMA model
+    fit_arima <- auto.arima(train_data)
+    forecast_arima <- forecast(fit_arima, h=h)
+    errors[i, "ARIMA"] <- accuracy(forecast_arima, test_data)[2, "RMSE"]
+    
+    # Fit SARIMA model
+    fit_sarima <- auto.arima(train_data, seasonal=TRUE)
+    forecast_sarima <- forecast(fit_sarima, h=h)
+    errors[i, "SARIMA"] <- accuracy(forecast_sarima, test_data)[2, "RMSE"]
+    
+    # Fit Exponential Smoothing model
+    fit_ets <- ets(train_data)
+    forecast_ets <- forecast(fit_ets, h=h)
+    errors[i, "ETS"] <- accuracy(forecast_ets, test_data)[2, "RMSE"]
+  }
+  
+  # Calculate average RMSE for each model
+  avg_errors <- colMeans(errors, na.rm=TRUE)
+  
+  return(avg_errors)
+}
+```
+
+```{r}
+set.seed(123)
+cv_errors <- cross_validation(ts_data, k=5, h=12)
+print(cv_errors)
+```
+```{r}
+# Select the best model based on lowest average RMSE
+best_model <- names(which.min(cv_errors))
+cat("Best model based on cross-validation is:", best_model, "\n")
+```
+
+# Forecasting
+
+```{r}
+# Plot the forecast
+autoplot(forecast_arima) +
+  autolayer(test_data, series = "Test Data", PI = FALSE) +
+  labs(title = "ARIMA Forecast for CO (GT) Levels", x = "Time", y = "CO (GT)") +
+  theme_minimal()
+```
+```{r}
+# Forecast future values (e.g., next 30 days)
+future_forecast <- forecast(fit_arima, h = 30)
+
+# Plot the future forecast
+autoplot(future_forecast) +
+  labs(title = "Future Forecast for CO (GT) Levels", x = "Time", y = "CO (GT)") +
+  theme_minimal()
+```
+```{r}
+#Plot residuals
+checkresiduals(fit_arima)
+
+```
+```{r}
+# Ljung-Box test
+Box.test(residuals(fit_arima), lag = 20, type = "Ljung-Box")
+```
+## forecast accuracy with metrics
+
+```{r}
+y_test <- as.numeric(test_data)
+# Ensure there are no missing values
+y_test <- na.omit(y_test)
+forecast_arima_values <- na.omit(forecast_arima_values)
+forecasts_sarima_values <- na.omit(forecasts_sarima_values)
+forecasts_ets_values <- na.omit(forecasts_ets_values)
+```
+
+
+```{r}
+# Function to calculate MAE
+mae <- function(actual, forecast) {
+  mean(abs(actual - forecast))
+}
+
+# Function to calculate RMSE
+rmse <- function(actual, forecast) {
+  sqrt(mean((actual - forecast)^2))
+}
+
+# Function to calculate MAPE
+mape <- function(actual, forecast) {
+  mean(abs((actual - forecast) / actual)) * 100
+}
+```
+
+```{r}
+# Calculate metrics for ARIMA
+mae_arima <- mae(y_test, forecast_arima_values)
+rmse_arima <- rmse(y_test, forecast_arima_values)
+mape_arima <- mape(y_test, forecast_arima_values)
+
+# Calculate metrics for SARIMA
+mae_sarima <- mae(y_test, forecasts_sarima_values)
+rmse_sarima <- rmse(y_test, forecasts_sarima_values)
+mape_sarima <- mape(y_test, forecasts_sarima_values)
+
+# Calculate metrics for ETS
+mae_ets <- mae(y_test, forecasts_ets_values)
+rmse_ets <- rmse(y_test, forecasts_ets_values)
+mape_ets <- mape(y_test, forecasts_ets_values)
+
+```
+
+```{r}
+# Print the results
+cat("ARIMA Model: MAE =", mae_arima, ", RMSE =", rmse_arima, ", MAPE =", mape_arima, "%\n")
+cat("SARIMA Model: MAE =", mae_sarima, ", RMSE =", rmse_sarima, ", MAPE =", mape_sarima, "%\n")
+cat("ETS Model: MAE =", mae_ets, ", RMSE =", rmse_ets, ", MAPE =", mape_ets, "%\n")
+```
+
